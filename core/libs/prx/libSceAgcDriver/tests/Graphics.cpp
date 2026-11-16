@@ -5891,11 +5891,19 @@ void InitialContextTests() {
     Require(queue.context.at(0x206) == 0, "the initial viewport control is not its reset value");
     Require(queue.context.at(0x8e) == 0xffffffffu && queue.context.at(0x8f) == 0xffffffffu, "the initial color masks are not their reset values");
     queue.userConfig[0x242] = 4;
-    for (const auto offset : {0x2d5u, 0x204u, 0x8eu, 0x8fu, 0x1c3u, 0x1c5u, 0x31cu, 0x3b0u, 0x3b8u, 0x318u, 0x390u, 0x10fu, 0x110u, 0x111u, 0x112u, 0x113u, 0x114u, 0xb4u, 0xb5u}) queue.context.at(offset) = configured.context.at(offset);
+    for (const auto offset : {0x2d5u, 0x204u, 0x8eu, 0x8fu, 0x1c3u, 0x1c5u, 0x31cu, 0x3b0u, 0x3b8u, 0x318u, 0x390u, 0xb4u, 0xb5u}) queue.context.at(offset) = configured.context.at(offset);
     const auto state = AgcDriver::Graphics::DecodeState(queue);
     Require(state.color.address == reinterpret_cast<std::uintptr_t>(colorMemory.data()) && state.color.bytes == colorMemory.size(), "sparse guest setup lost its render target");
     Require(state.viewport.x == 0.0f && state.viewport.y == 0.0f && state.viewport.width == static_cast<float>(state.renderExtent.width) && state.viewport.height == static_cast<float>(state.renderExtent.height), "a draw without a viewport transform did not get a viewport covering its render target");
     Require(AgcDriver::Graphics::DrawRejection(queue, false).find("PA_CL_VTE_CNTL") == std::string::npos, "a draw with the reset viewport control was rejected for its viewport control");
+    for (const auto offset : {0x10fu, 0x110u, 0x111u, 0x112u, 0x113u, 0x114u}) queue.context.at(offset) = configured.context.at(offset);
+    const auto programmed = AgcDriver::Graphics::DecodeState(queue);
+    queue.context[0x206] = 0x43f;
+    const auto transformed = AgcDriver::Graphics::DecodeState(queue);
+    queue.context[0x206] = 0;
+    Require(programmed.viewport.x == transformed.viewport.x && programmed.viewport.y == transformed.viewport.y && programmed.viewport.width == transformed.viewport.width && programmed.viewport.height == transformed.viewport.height && programmed.viewport.minDepth == transformed.viewport.minDepth && programmed.viewport.maxDepth == transformed.viewport.maxDepth, "a draw with the reset viewport control ignored the viewport transform it programmed");
+    Require(programmed.viewport.height < 0.0f, "the programmed viewport transform lost its flipped Y scale");
+    Require(AgcDriver::Graphics::DrawRejection(queue, false).find("PA_CL_VTE_CNTL") == std::string::npos, "a draw with the reset viewport control and a programmed viewport was rejected for its viewport control");
     for (const auto control : {0x3fu, 0x43eu, 0x53fu, 0x63fu, 0x8000043fu}) {
         queue.context[0x206] = control;
         expectFailure([&] { AgcDriver::Graphics::DecodeState(queue); }, "PA_CL_VTE_CNTL=0x");

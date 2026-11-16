@@ -122,6 +122,13 @@ void zero(const Registers& registers, std::uint32_t offset, std::uint32_t mask, 
     if ((value & mask) != 0) throw std::runtime_error(zeroMessage(offset, value, name));
 }
 
+std::uint32_t viewportControl(const Registers& cx) {
+    const auto control = read(cx, 0x206);
+    if (control != 0u) return control;
+    const bool programmed = read(cx, 0x10f) != 0x3f800000u || read(cx, 0x110) != 0u || read(cx, 0x111) != 0x3f800000u || read(cx, 0x112) != 0u;
+    return programmed ? 0x43fu : 0u;
+}
+
 std::string vteMessage(std::uint32_t viewportControl) {
     std::ostringstream message;
     message << "AGC graphics: PA_CL_VTE_CNTL=0x" << std::hex << viewportControl << ": expected 0x43f for homogeneous positions and all viewport transforms, or 0 for positions without a viewport transform; other combinations are unsupported";
@@ -1738,7 +1745,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
     Require((read(cx, 0x8c) & 0xfu) == 0xau, "nonstandard triangle edge rules are unsupported");
     Require(read(cx, 0x2f9) == 0x2du, "nonstandard pixel center or vertex quantization is unsupported");
     if (auto reason = sampleMaskRejection(queue, read(cx, 0x2f8), read(cx, 0x30e), read(cx, 0x30f)); !reason.empty()) throw std::runtime_error(reason);
-    const auto viewportControl = read(cx, 0x206);
+    const auto viewportControl = AgcDriver::Graphics::viewportControl(cx);
     if (viewportControl != 0x43fu && viewportControl != 0u) throw std::runtime_error(vteMessage(viewportControl));
     zero(cx, 0x204, ClipControlMask, "a PA_CL_CLIP_CNTL flag");
     result.depthClamp = (read(cx, 0x204) & 0x0c000000u) != 0;
@@ -2590,7 +2597,7 @@ ColorTarget DecodeColorBuffer(const Registers& cx, std::uint32_t slot, bool allo
 namespace {
 
 bool drawCovers(const Registers& cx, VkExtent2D extent, const ColorTarget* gcnTarget = nullptr) {
-    const auto viewportControl = read(cx, 0x206);
+    const auto viewportControl = AgcDriver::Graphics::viewportControl(cx);
     if (viewportControl != 0x43fu && viewportControl != 0u) throw std::runtime_error(vteMessage(viewportControl));
     const auto xs = std::fabs(readFloat(cx, 0x10f));
     const auto xo = readFloat(cx, 0x110);
@@ -2736,7 +2743,7 @@ std::optional<DepthExpandPass> DecodeDepthExpandPass(const QueueState& queue) {
     if ((value(0x207) & LayerExports) != 0) reject("with layer exports");
     if (((source | destination | (planes.stencil ? base(0x013, 0x01b) | base(0x015, 0x01d) : 0u)) & 0xffffu) != 0) reject("between bases that are not 64 KiB aligned");
     zero(cx, 0x80, ~0u, "window offset");
-    if (const auto viewportControl = read(cx, 0x206); viewportControl != 0x43fu) throw std::runtime_error(vteMessage(viewportControl));
+    if (const auto viewportControl = AgcDriver::Graphics::viewportControl(cx); viewportControl != 0x43fu) throw std::runtime_error(vteMessage(viewportControl));
     auto target = decodeDepthPlane(cx);
     target.clearDepth = readFloat(cx, 0x00b);
     target.clearStencil = static_cast<std::uint8_t>(read(cx, 0x00a) & 0xffu);
