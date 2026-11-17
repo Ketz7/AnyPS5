@@ -1,3 +1,4 @@
+#include "prx/libc/include/GuestAllocations.hpp"
 #include "prx/libSceAgcDriver/Execution/include/ProfileOutput.hpp"
 #include "prx/libSceAgcDriver/Execution/include/PerformanceTimer.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Driver.hpp"
@@ -10,6 +11,7 @@
 #include "prx/libSceAgcDriver/Execution/include/Driver/Synchronization/DeferredLabels.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Pm4.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/BdaResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Recorder.hpp"
@@ -550,6 +552,7 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
         if (profile) NotePipelineReady(address);
     }
 
+    Graphics::BdaResources::DebugNoteProgram(address);
     if (recordQueuedLabelsAfterCapture(submission.queue, captured)) {
         dispatch(queue, packet, submission, indirectArguments);
         return;
@@ -568,6 +571,40 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
     }
     const std::uint64_t dispatchThreads = indirectArguments != 0 ? 0 : std::uint64_t{groups[0]} * groups[1] * groups[2] * compute.numThreads[0] * compute.numThreads[1] * compute.numThreads[2];
     static const bool traceIo = std::getenv("APS5_TRACE_DISPATCH_IO") != nullptr;
+    if (std::getenv("APS5_DEBUG_UNMAPPED") != nullptr && (address == 0x20c61b500ull || address == 0x20c61ba00ull || address == 0x20c61cb00ull)) {
+        static std::map<std::uint64_t, int> debugPrinted;
+        static std::mutex debugMutex;
+        std::lock_guard debugLock(debugMutex);
+        if (debugPrinted[address]++ < 40) {
+            std::string debugWords;
+            for (const auto word : userData) {
+                char text[12];
+                std::snprintf(text, sizeof(text), " %08x", word);
+                debugWords += text;
+            }
+            std::fprintf(stderr, "[debug-dispatch] shader 0x%llx submission=%llu groups=%u,%u,%u threads=%u,%u,%u indirect=0x%llx user%s\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(submission.serial), groups[0], groups[1], groups[2], compute.numThreads[0], compute.numThreads[1], compute.numThreads[2], static_cast<unsigned long long>(indirectArguments), debugWords.c_str());
+            if (address == 0x20c61b500ull && debugPrinted[address] <= 3 && userData.size() >= 8) {
+                const auto header = (std::uint64_t{userData[5]} << 32) | userData[4];
+                const auto table = (std::uint64_t{userData[7]} << 32) | userData[6];
+                const auto guest = GuestAllocations::GuestAllocationsLookup_nid_postfix(static_cast<std::uintptr_t>(table), false);
+                if (guest != nullptr && table >= guest->address && table + 16 * 12 <= guest->address + guest->bytes && guest->readable) {
+                    std::string entries;
+                    const auto* header32 = reinterpret_cast<const volatile std::uint32_t*>(static_cast<std::uintptr_t>(header));
+                    char text[48];
+                    std::snprintf(text, sizeof(text), " header %08x %08x %08x %08x |", header32[0], header32[1], header32[2], header32[3]);
+                    entries += text;
+                    const auto* words32 = reinterpret_cast<const volatile std::uint32_t*>(static_cast<std::uintptr_t>(table));
+                    for (int entry = 0; entry < 16; ++entry) {
+                        std::snprintf(text, sizeof(text), " %08x/%08x/%08x", words32[entry * 3], words32[entry * 3 + 1], words32[entry * 3 + 2]);
+                        entries += text;
+                    }
+                    std::fprintf(stderr, "[debug-table] cpu view of 0x%llx at dispatch:%s\n", static_cast<unsigned long long>(table), entries.c_str());
+                } else {
+                    std::fprintf(stderr, "[debug-table] 0x%llx is not readable guest memory\n", static_cast<unsigned long long>(table));
+                }
+            }
+        }
+    }
     if (traceIo) {
 
         std::string words;

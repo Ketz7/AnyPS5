@@ -74,7 +74,9 @@ public:
     };
     static TableCacheStats TableCacheCounters();
 
+    static void DebugNoteProgram(std::uint64_t program);
 private:
+    std::uint64_t debugProgram = 0;
     // The page table is read-only to the shader, so consecutive builds mapping the same ranges to the
     // same device addresses share one buffer while one of them is alive (see the table cache in
     // BdaResources.cpp, which refers to it weakly).

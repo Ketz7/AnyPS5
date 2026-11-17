@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "ImageTableAbi.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
+#include "prx/libc/include/GuestAllocations.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -183,7 +184,16 @@ void dropChunk(FaultArena& arena, const std::shared_ptr<BdaFaultChunk>& chunk, s
 
 }
 
+namespace {
+thread_local std::uint64_t debugCurrentProgram = 0;
+}
+
+void BdaResources::DebugNoteProgram(std::uint64_t program) {
+    debugCurrentProgram = program;
+}
+
 BdaResources::BdaResources(const Context& context, bool reportOnly) : reportOnly(reportOnly) {
+    debugProgram = debugCurrentProgram;
     static_assert(std::endian::native == std::endian::little);
     Require(ShaderRecompiler::BdaAbi::FaultBufferBytes <= context.limits.maxStorageBufferRange, "BDA fault buffer exceeds storage buffer range limit");
     TakeFaultSlot(context);
@@ -533,6 +543,28 @@ void BdaResources::checkFault(const BdaResources& record) const {
             if (report.address < range.begin || report.address >= range.end) continue;
             message << std::hex << "; the store hit 0x" << range.begin << "+0x" << range.end - range.begin << ", read-only in the BDA table: stores through GPU-selected descriptors and FLAT/GLOBAL addresses reach only writable ranges imported in place, not ones served by a mirror or a copy (past APS5_HOST_IMPORT_MIB, or refused by the driver)";
             break;
+        }
+    }
+    if (report.reason == ShaderRecompiler::BdaAbi::FaultReason::Unmapped && std::getenv("APS5_DEBUG_UNMAPPED") != nullptr) {
+        const auto guest = GuestAllocations::GuestAllocationsLookup_nid_postfix(static_cast<std::uintptr_t>(report.address), false);
+        if (guest != nullptr && report.address >= guest->address && report.address < guest->address + guest->bytes) message << "; guest maps [0x" << std::hex << guest->address << ", 0x" << guest->address + guest->bytes << std::dec << ") r" << guest->readable << " w" << guest->writable << " gpu" << guest->gpu << " in the allocation at 0x" << std::hex << guest->allocationAddress << std::dec << " (" << guest->allocationBytes << " bytes)";
+        else message << "; no guest mapping holds it";
+        message << "; program 0x" << std::hex << record.debugProgram << std::dec;
+        if (table != nullptr) {
+            const auto bytes = table->Bytes();
+            ShaderRecompiler::BdaAbi::Header header{};
+            std::memcpy(&header, bytes.data(), sizeof(header));
+            ShaderRecompiler::BdaAbi::Range below{}, above{};
+            bool hasBelow = false, hasAbove = false;
+            for (std::uint32_t index = 0; index < header.count; ++index) {
+                ShaderRecompiler::BdaAbi::Range range{};
+                std::memcpy(&range, bytes.data() + sizeof(header) + index * sizeof(range), sizeof(range));
+                if (range.end <= report.address && (!hasBelow || range.end > below.end)) { below = range; hasBelow = true; }
+                if (range.begin > report.address && (!hasAbove || range.begin < above.begin)) { above = range; hasAbove = true; }
+            }
+            message << "; table of " << header.count << " ranges";
+            if (hasBelow) message << ", below [0x" << std::hex << below.begin << ", 0x" << below.end << ")" << std::dec;
+            if (hasAbove) message << ", above [0x" << std::hex << above.begin << ", 0x" << above.end << ")" << std::dec;
         }
     }
     if (report.reason == ShaderRecompiler::BdaAbi::FaultReason::Unaligned) {
