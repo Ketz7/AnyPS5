@@ -139,6 +139,26 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
     for (std::uint32_t i = 0; i < userCount; ++i) {
         userData.push_back(readUserData(queue.shader, 0x240 + i));
     }
+    if (static const bool bvhTrace = std::getenv("APS5_DEBUG_BVH_TRACE") != nullptr; bvhTrace) {
+        bool touchesStructures = false;
+        for (std::size_t i = 0; i + 1 < userData.size(); ++i) {
+            if (userData[i + 1] == 0x40u && userData[i] >= 0x0e000000u && userData[i] < 0x0f000000u) touchesStructures = true;
+        }
+        if ((address >= 0x20c600000ull && address < 0x20c620000ull) || touchesStructures) {
+            static std::mutex traceMutex;
+            static int traced = 0;
+            std::lock_guard traceLock(traceMutex);
+            if (traced++ < 30000) {
+                std::string words;
+                for (const auto word : userData) {
+                    char text[12];
+                    std::snprintf(text, sizeof(text), " %08x", word);
+                    words += text;
+                }
+                std::fprintf(stderr, "[bvh-trace] shader 0x%llx submission=%llu packet=%llu resolving=%d groups=%u,%u,%u indirect=0x%llx user%s\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(submission.serial), static_cast<unsigned long long>(currentPacketOffset()), resolvingAhead() ? 1 : 0, packet.size() > 3 ? packet[1] : 0u, packet.size() > 3 ? packet[2] : 0u, packet.size() > 3 ? packet[3] : 0u, static_cast<unsigned long long>(indirectArguments), words.c_str());
+            }
+        }
+    }
     auto compute = Graphics::DecodeComputeStageInfo(queue.shader, snapshot.header);
     const bool resolving = resolvingAhead();
     std::vector<ShaderRecompiler::MemoryRegion> memory{{snapshot.codeAddress, std::as_bytes(std::span(snapshot.code))}};
