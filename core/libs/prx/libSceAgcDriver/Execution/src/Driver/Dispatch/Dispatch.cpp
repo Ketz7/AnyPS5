@@ -155,7 +155,28 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
                     std::snprintf(text, sizeof(text), " %08x", word);
                     words += text;
                 }
-                std::fprintf(stderr, "[bvh-trace] shader 0x%llx submission=%llu packet=%llu resolving=%d groups=%u,%u,%u indirect=0x%llx user%s\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(submission.serial), static_cast<unsigned long long>(currentPacketOffset()), resolvingAhead() ? 1 : 0, packet.size() > 3 ? packet[1] : 0u, packet.size() > 3 ? packet[2] : 0u, packet.size() > 3 ? packet[3] : 0u, static_cast<unsigned long long>(indirectArguments), words.c_str());
+                std::string link;
+                std::uint64_t structure = 0, bvhStart = 0;
+                if (address == 0x20c61cb00ull && userData.size() > 6) structure = (static_cast<std::uint64_t>(userData[6]) << 32u) | userData[5];
+                if (address == 0x20058ef00ull && userData.size() > 6) structure = (static_cast<std::uint64_t>(userData[5]) << 32u) | userData[4];
+                if (address == 0x20c616e00ull && userData.size() > 8) bvhStart = (static_cast<std::uint64_t>(userData[5]) << 32u) | userData[4];
+                try {
+                if (structure != 0) {
+                    std::uint32_t offset = 0;
+                    GuestMemory::ReadCommittedUnsynced(structure, std::as_writable_bytes(std::span(&offset, 1)));
+                    if (offset > 0 && offset < 0x100000u) bvhStart = structure + offset;
+                }
+                if (bvhStart != 0) {
+                    std::uint32_t parent = 0;
+                    GuestMemory::ReadCommittedUnsynced(bvhStart - 4, std::as_writable_bytes(std::span(&parent, 1)));
+                    char text[96];
+                    std::snprintf(text, sizeof(text), " rootparent@0x%llx=%08x pending=%d", static_cast<unsigned long long>(bvhStart - 4), parent, Graphics::Recorder::SnapshotWriteOverlaps(bvhStart - 4, 4) ? 1 : 0);
+                    link = text;
+                }
+                } catch (const std::exception& error) {
+                    link = std::string(" rootparent read failed: ") + error.what();
+                }
+                std::fprintf(stderr, "[bvh-trace] shader 0x%llx submission=%llu packet=%llu resolving=%d groups=%u,%u,%u indirect=0x%llx user%s%s\n", static_cast<unsigned long long>(address), static_cast<unsigned long long>(submission.serial), static_cast<unsigned long long>(currentPacketOffset()), resolvingAhead() ? 1 : 0, packet.size() > 3 ? packet[1] : 0u, packet.size() > 3 ? packet[2] : 0u, packet.size() > 3 ? packet[3] : 0u, static_cast<unsigned long long>(indirectArguments), words.c_str(), link.c_str());
             }
         }
     }
