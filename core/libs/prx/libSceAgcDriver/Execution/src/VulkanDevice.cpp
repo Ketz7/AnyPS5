@@ -6220,20 +6220,37 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
     // Only copied written buffers (and BDA fault checks) need work once the GPU is done; without them
     // the batch can signal its labels from the GPU.
     const bool completionNeeded = resources.NeedsCompletion() || record.htileClear.has_value();
+    static const bool bvhTrace = std::getenv("APS5_DEBUG_BVH_TRACE") != nullptr;
+    const auto traced = bvhTrace && (record.programAddress == 0x20c616e00ull || record.programAddress == 0x20058ef00ull || record.programAddress == 0x20c61cb00ull || record.programAddress == 0x20c614200ull) ? record.programAddress : 0ull;
+    static std::atomic<std::uint64_t> tracedCount{0};
+    const auto traceId = traced != 0 ? tracedCount.fetch_add(1) : 0;
+    if (traced != 0) std::fprintf(stderr, "[bvh-complete] record #%llu shader 0x%llx serial %llu overlap=%d completion=%d reusable=%d copied=%d resources=%p\n", static_cast<unsigned long long>(traceId), static_cast<unsigned long long>(traced), static_cast<unsigned long long>(recorder.OpenSerial()), overlapCapable ? 1 : 0, completionNeeded ? 1 : 0, resources.Reusable() ? 1 : 0, resources.HasCopiedWrites() ? 1 : 0, static_cast<const void*>(record.resources.get()));
     if (completionNeeded && resources.Reusable()) {
         auto kept = record.resources;
-        recorder.OnComplete([kept, htileClear = record.htileClear] {
-            kept->CheckFaults();
+        recorder.OnComplete([kept, htileClear = record.htileClear, traced, traceId] {
+            try {
+                kept->CheckFaults();
+            } catch (const std::exception& error) {
+                if (traced != 0) std::fprintf(stderr, "[bvh-complete] #%llu shader 0x%llx check threw: %s\n", static_cast<unsigned long long>(traceId), static_cast<unsigned long long>(traced), error.what());
+                throw;
+            }
+            if (traced != 0) std::fprintf(stderr, "[bvh-complete] #%llu shader 0x%llx checked\n", static_cast<unsigned long long>(traceId), static_cast<unsigned long long>(traced));
             if (htileClear.has_value()) Graphics::CompleteHtileDepthClear(htileClear->first, htileClear->second);
         });
     } else if (completionNeeded) {
         // Listed for DispatchIndirect until the write-back ran (a non-reusable object, so once).
         auto writers = state->copiedWriters;
         auto kept = record.resources;
-        recorder.OnComplete([kept, writers, htileClear = record.htileClear] {
+        recorder.OnComplete([kept, writers, htileClear = record.htileClear, traced, traceId] {
             // Delisted before the write-back: one that fails must not keep indirect dispatches on the CPU.
             writers->erase(std::remove(writers->begin(), writers->end(), kept), writers->end());
-            kept->WriteBackBuffers();
+            try {
+                kept->WriteBackBuffers();
+            } catch (const std::exception& error) {
+                if (traced != 0) std::fprintf(stderr, "[bvh-complete] #%llu shader 0x%llx write-back threw: %s\n", static_cast<unsigned long long>(traceId), static_cast<unsigned long long>(traced), error.what());
+                throw;
+            }
+            if (traced != 0) std::fprintf(stderr, "[bvh-complete] #%llu shader 0x%llx written back\n", static_cast<unsigned long long>(traceId), static_cast<unsigned long long>(traced));
             if (htileClear.has_value()) Graphics::CompleteHtileDepthClear(htileClear->first, htileClear->second);
         });
         // Listed after the registration: a throw there leaves nothing that would pin the CPU path forever.

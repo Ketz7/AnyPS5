@@ -165,13 +165,16 @@ void Driver::dispatch(QueueState& queue, std::span<const std::uint32_t> packet, 
                     std::uint32_t offset = 0;
                     GuestMemory::ReadCommittedUnsynced(structure, std::as_writable_bytes(std::span(&offset, 1)));
                     if (offset > 0 && offset < 0x100000u) bvhStart = structure + offset;
+                    char text[64];
+                    std::snprintf(text, sizeof(text), " header.bvh_offset=%08x", offset);
+                    link = text;
                 }
                 if (bvhStart != 0) {
                     std::uint32_t parent = 0;
                     GuestMemory::ReadCommittedUnsynced(bvhStart - 4, std::as_writable_bytes(std::span(&parent, 1)));
                     char text[96];
                     std::snprintf(text, sizeof(text), " rootparent@0x%llx=%08x pending=%d", static_cast<unsigned long long>(bvhStart - 4), parent, Graphics::Recorder::SnapshotWriteOverlaps(bvhStart - 4, 4) ? 1 : 0);
-                    link = text;
+                    link += text;
                 }
                 } catch (const std::exception& error) {
                     link = std::string(" rootparent read failed: ") + error.what();
