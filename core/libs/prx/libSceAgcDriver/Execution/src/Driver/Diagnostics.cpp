@@ -185,13 +185,14 @@ BackgroundWaitScope::~BackgroundWaitScope() {
 }
 
 bool AwaitBackgroundJob(std::mutex& mutex, const bool& finished, bool& waited) {
+    std::chrono::steady_clock::duration allowed{};
     {
         std::lock_guard lock(mutex);
         if (finished) return true;
         if (waited || !HostThreadSlot<bool, BackgroundWaitTag>::Get() || AsyncDispatchWait().count() <= 0) return false;
+        allowed = takeBackgroundWait();
         waited = true;
     }
-    const auto allowed = takeBackgroundWait();
     if (allowed <= std::chrono::steady_clock::duration{}) return false;
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + allowed;

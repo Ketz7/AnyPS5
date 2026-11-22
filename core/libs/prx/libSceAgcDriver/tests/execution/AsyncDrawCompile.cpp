@@ -28,9 +28,15 @@ struct BackgroundWaitTestJob {
         return AgcDriver::DriverDetail::AwaitBackgroundJob(mutex, finished, waited);
     }
 
-    bool EnteredWait() {
-        std::lock_guard lock(mutex);
-        return waited;
+    bool WaitForAttempt(std::chrono::steady_clock::time_point deadline) {
+        do {
+            {
+                std::lock_guard lock(mutex);
+                if (waited) return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
     }
 
     void Finish() {
@@ -54,23 +60,22 @@ void CheckBackgroundWaitBudget() {
     std::jthread firstWorker([&] { worker(first); });
     std::jthread secondWorker([&] { worker(second); });
     const auto entering = Clock::now() + 500ms;
-    while ((!first.EnteredWait() || !second.EnteredWait()) && Clock::now() < entering)
-        std::this_thread::sleep_for(1ms);
-    Require(first.EnteredWait() && second.EnteredWait(), "both jobs must start waiting");
-    std::this_thread::sleep_for(25ms);
+    Require(first.WaitForAttempt(entering) && second.WaitForAttempt(entering), "both jobs must attempt to reserve background wait budget");
 
+    const auto awaitWithCompletion = [](BackgroundWaitTestJob& job) {
+        std::jthread complete([&] {
+            if (job.WaitForAttempt(Clock::now() + 500ms)) job.Finish();
+        });
+        return job.Await();
+    };
     const BackgroundWaitScope dispatch;
-    const auto start = Clock::now();
-    Require(!denied.Await() && Clock::now() - start < 500ms, "concurrent waits must reserve the available background wait budget");
+    const bool acceptedWithoutBudget = awaitWithCompletion(denied);
     first.Finish();
     firstWorker.join();
-
-    std::jthread complete([&] {
-        std::this_thread::sleep_for(25ms);
-        reused.Finish();
-    });
-    Require(reused.Await(), "a job that completes early must release unused background wait budget");
+    const bool acceptedAfterRelease = awaitWithCompletion(reused);
     second.Finish();
+    Require(!acceptedWithoutBudget, "concurrent waits must reserve the available background wait budget");
+    Require(acceptedAfterRelease, "a job that completes early must release unused background wait budget");
 }
 
 alignas(256) constexpr std::array<std::uint32_t, 7> Code{0xd7460000u, 0x04010c04u, 0x7e0202ffu, 0x12345678u, 0xe0702000u, 0x80000100u, 0xbf810000u};
